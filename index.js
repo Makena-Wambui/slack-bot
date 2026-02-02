@@ -1,5 +1,8 @@
 // Import the Bolt package for building Slack apps
 const { App } = require("@slack/bolt");
+// chrono-node for parsing natural language dates
+const chrono = require("chrono-node");
+const cron = require("node-cron");
 
 // Load environment variables from .env file so we can use them in our app
 require("dotenv").config();
@@ -226,5 +229,256 @@ function buildPollBlocks(question, options, votes) {
   ];
 }
 
+app.command("/coffee", async ({ command, ack, respond, client }) => {
+  await ack();
+
+  try {
+    // Get all members of the channel
+    const result = await client.conversations.members({
+      channel: command.channel_id,
+    });
+
+    const members = result.members.filter((m) => m !== command.user_id); // exclude the invoker
+
+    if (members.length === 0) {
+      return respond({
+        text: "❌ No other members found in this channel.",
+        response_type: "ephemeral",
+      });
+    }
+
+    // Pick a random member
+    const buddy = members[Math.floor(Math.random() * members.length)];
+
+    await respond({
+      text: `☕ <@${command.user_id}> has been paired with <@${buddy}> for a coffee chat!`,
+      response_type: "in_channel",
+    });
+  } catch (error) {
+    console.error(error);
+    await respond({
+      text: "❌ Failed to find a coffee buddy.",
+      response_type: "ephemeral",
+    });
+  }
+});
+
+// Helper to parse recurring time expressions
+function parseRecurring(timeExpr) {
+  // Example: "every September 15 at 9am" (yearly)
+  let match = timeExpr.match(/every (\w+) (\d{1,2}) at (\d+)(am|pm)/i);
+  if (match) {
+    const monthNames = {
+      january: 1,
+      february: 2,
+      march: 3,
+      april: 4,
+      may: 5,
+      june: 6,
+      july: 7,
+      august: 8,
+      september: 9,
+      october: 10,
+      november: 11,
+      december: 12,
+    };
+    const month = monthNames[match[1].toLowerCase()];
+    const day = parseInt(match[2], 10);
+    let hour = parseInt(match[3], 10);
+    const meridian = match[4].toLowerCase();
+    if (meridian === "pm" && hour !== 12) hour += 12;
+    if (meridian === "am" && hour === 12) hour = 0;
+
+    return `0 ${hour} ${day} ${month} *`; // yearly
+  }
+
+  // Example: "every 1st at 10am" (monthly)
+  match = timeExpr.match(/every (\d{1,2})(st|nd|rd|th) at (\d+)(am|pm)/i);
+  if (match) {
+    const day = parseInt(match[1], 10);
+    let hour = parseInt(match[3], 10);
+    const meridian = match[4].toLowerCase();
+    if (meridian === "pm" && hour !== 12) hour += 12;
+    if (meridian === "am" && hour === 12) hour = 0;
+
+    return `0 ${hour} ${day} * *`; // monthly
+  }
+
+  // Fallback: weekly parser (from earlier)
+  match = timeExpr.match(/every (\w+) at (\d+)(am|pm)/i);
+  if (match) {
+    const days = {
+      sunday: 0,
+      monday: 1,
+      tuesday: 2,
+      wednesday: 3,
+      thursday: 4,
+      friday: 5,
+      saturday: 6,
+    };
+    const day = days[match[1].toLowerCase()];
+    let hour = parseInt(match[2], 10);
+    const meridian = match[3].toLowerCase();
+    if (meridian === "pm" && hour !== 12) hour += 12;
+    if (meridian === "am" && hour === 12) hour = 0;
+
+    return `0 ${hour} * * ${day}`; // weekly
+  }
+
+  return null;
+}
+
+const reminders = {};
+// Structure: { channelId: { taskName: { job, type, schedule } } }
+
+app.command("/remindme", async ({ command, ack, respond, client }) => {
+  await ack();
+
+  const matches = command.text.match(/"([^"]+)"/g);
+  if (!matches || matches.length < 2) {
+    return respond({
+      text: '❌ Usage: /remindme "Task" "Time expression"',
+      response_type: "ephemeral",
+    });
+  }
+
+  const task = matches[0].replace(/"/g, "");
+  const timeExpr = matches[1].replace(/"/g, "");
+
+  if (/every/i.test(timeExpr)) {
+    const cronExpr = parseRecurring(timeExpr);
+    if (!cronExpr) {
+      return respond({
+        text: "⚠️ Could not parse recurring time.",
+        response_type: "ephemeral",
+      });
+    }
+
+    const job = cron.schedule(cronExpr, async () => {
+      await client.chat.postMessage({
+        channel: command.channel_id,
+        text: `⏰ Recurring reminder: ${task}`,
+      });
+    });
+
+    if (!reminders[command.channel_id]) reminders[command.channel_id] = {};
+    reminders[command.channel_id][task] = {
+      job,
+      type: "recurring",
+      schedule: timeExpr,
+    };
+
+    return respond({
+      text: `✅ Recurring reminder set: *${task}* (${timeExpr}).`,
+      response_type: "ephemeral",
+    });
+  }
+
+  // One-time reminder
+  const parsedDate = chrono.parseDate(timeExpr);
+  if (!parsedDate) {
+    return respond({
+      text: "⚠️ Could not understand the time expression.",
+      response_type: "ephemeral",
+    });
+  }
+
+  const delayMs = parsedDate.getTime() - Date.now();
+  if (delayMs <= 0) {
+    return respond({
+      text: "⚠️ That time is in the past.",
+      response_type: "ephemeral",
+    });
+  }
+
+  setTimeout(async () => {
+    await client.chat.postMessage({
+      channel: command.channel_id,
+      text: `⏰ Reminder: ${task}`,
+    });
+    // Remove after firing
+    delete reminders[command.channel_id][task];
+  }, delayMs);
+
+  if (!reminders[command.channel_id]) reminders[command.channel_id] = {};
+  reminders[command.channel_id][task] = {
+    type: "one-time",
+    schedule: parsedDate.toLocaleString(),
+  };
+
+  await respond({
+    text: `✅ Reminder set: *${task}* at ${parsedDate.toLocaleString()}`,
+
+    response_type: "ephemeral",
+  });
+});
+
+// List reminders
+app.command("/listreminders", async ({ command, ack, respond }) => {
+  await ack();
+
+  const channelReminders = reminders[command.channel_id];
+  if (!channelReminders || Object.keys(channelReminders).length === 0) {
+    return respond({
+      text: "⚠️ No active reminders in this channel.",
+      response_type: "ephemeral",
+    });
+  }
+
+  let listText = "*📋 Active Reminders:*\n";
+  for (const [task, info] of Object.entries(channelReminders)) {
+    listText += `• ${task} — ${info.type} (${info.schedule})\n`;
+  }
+
+  return respond({
+    text: listText,
+    response_type: "ephemeral",
+  });
+});
+
+app.command("/cancelme", async ({ command, ack, respond }) => {
+  await ack();
+
+  const task = command.text.trim();
+
+  // If no task name provided, cancel the most recent reminder in this channel
+  const channelReminders = reminders[command.channel_id];
+  if (!channelReminders || Object.keys(channelReminders).length === 0) {
+    return respond({
+      text: "⚠️ No active reminders to cancel in this channel.",
+      response_type: "ephemeral",
+    });
+  }
+
+  if (!task) {
+    // Cancel the most recent reminder
+    const lastTask = Object.keys(channelReminders).pop();
+    channelReminders[lastTask].job.stop();
+    delete channelReminders[lastTask];
+
+    return respond({
+      text: `🛑 Most recent reminder *${lastTask}* has been cancelled.`,
+      response_type: "ephemeral",
+    });
+  }
+
+  // Cancel by task name
+  if (channelReminders[task]) {
+    channelReminders[task].job.stop();
+    delete channelReminders[task];
+
+    return respond({
+      text: `🛑 Reminder *${task}* has been cancelled.`,
+      response_type: "ephemeral",
+    });
+  }
+
+  return respond({
+    text: `⚠️ No active reminder found for *${task}*.`,
+    response_type: "ephemeral",
+  });
+});
+
 // Call the startApp function to start the app
+
 startApp();
