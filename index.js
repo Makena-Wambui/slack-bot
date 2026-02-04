@@ -19,7 +19,7 @@ async function startApp() {
   // Start the app on port 3000 or the port defined in the PORT environment variable
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ Slack Bolt app is running on port ${port}!`);
+  console.log(`Bolt app running on port ${port}!`);
 }
 
 app.command("/hello", async ({ command, ack, say }) => {
@@ -509,6 +509,50 @@ app.command("/cancelme", async ({ command, ack, respond }) => {
       response_type: "ephemeral",
     });
   }
+});
+
+// /decison command
+const decisions = [];
+
+app.command("/decision", async ({ command, ack, respond, client }) => {
+  await ack();
+
+  const matches = command.text.match(/"([^"]+)"/g);
+
+  if (!matches || matches.length < 2) {
+    return respond({
+      text: '❌ Usage: /decision "Decision" "Reason"',
+      response_type: "ephemeral",
+    });
+  }
+
+  const decisionText = matches[0].replace(/"/g, "");
+  const reason = matches[1].replace(/"/g, "");
+
+  const entry = {
+    decision: decisionText,
+    reason,
+    decidedBy: command.user_id,
+    channel: command.channel_id,
+    timestamp: new Date(),
+  };
+
+  decisions.push(entry);
+
+  await client.chat.postMessage({
+    channel: command.channel_id,
+    text:
+      `📌 *Team Decision*\n\n` +
+      `*Decision:* ${decisionText}\n` +
+      `*Reason:* ${reason}\n` +
+      `*Decided by:* <@${command.user_id}>\n` +
+      `*Date:* ${entry.timestamp.toLocaleString()}`,
+  });
+
+  await respond({
+    text: "✅ Decision logged successfully.",
+    response_type: "ephemeral",
+  });
 });
 
 // Call the startApp function to start the app

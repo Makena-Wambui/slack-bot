@@ -15,6 +15,7 @@ A Slack bot built using Bolt for JavaScript that provides various functionalitie
 - **/remindme**: Sets one-time or recurring reminders. Example: `/remindme "Meeting with team" "Today at 3 PM"`
 - **/listreminders**: Lists all active reminders for the user. Example: `/listreminders`
 - **/cancelme**: Cancels a specific reminder. Example: `/cancelme`
+- **/decision**: Decision log for the team. Example: `/decision "Decided to use Node.js for backend" "Faster development and large community support"`
 
 ## Tech Stack
 
