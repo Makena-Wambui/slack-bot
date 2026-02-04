@@ -29,7 +29,7 @@ A Slack bot built using Bolt for JavaScript that provides various functionalitie
    ```bash
    git clone
 
-    cd SLACK-BOT
+   cd SLACK-BOT
    ```
 
 2. **Install dependencies**:
@@ -57,5 +57,3 @@ A Slack bot built using Bolt for JavaScript that provides various functionalitie
    ```
 2. **Interact with the bot**:
    - Use the slash commands in your Slack workspace to interact with the bot.
-
-   - **/hello**:
