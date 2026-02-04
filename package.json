@@ -1,5 +1,5 @@
 {
-  "name": "slack-bot",
+  "name": "nafes_bot",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
@@ -10,6 +10,7 @@
   "license": "ISC",
   "description": "",
   "devDependencies": {
+    "dotenv": "^16.4.5",
     "nodemon": "^3.1.11"
   },
   "dependencies": {
