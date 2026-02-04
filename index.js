@@ -91,7 +91,12 @@ app.command("/help", async ({ command, ack, say }) => {
     /founders - Get the names of the founders of Code Blossom
     /add_numbers [num1] [num2] ... - Add a list of numbers and return the sum
     /help - List all available commands
-    /random-quotes - Generate a randomquote
+    /poll "Question" "Option1" "Option2" ... - Create a poll with multiple options
+    /closepoll - Close the active poll in the channel and show results
+    /coffee - Pair up with a random team member for a coffee chat
+    /remindme "Task" "Time expression" - Set a reminder (supports one-time and recurring)
+    /listreminders - List all active reminders in the channel
+    /cancelme [Task] - Cancel a specific reminder or the most recent one if no task is specified
     `,
   );
 });
@@ -263,10 +268,43 @@ app.command("/coffee", async ({ command, ack, respond, client }) => {
   }
 });
 
-// Helper to parse recurring time expressions
 function parseRecurring(timeExpr) {
-  // Example: "every September 15 at 9am" (yearly)
-  let match = timeExpr.match(/every (\w+) (\d{1,2}) at (\d+)(am|pm)/i);
+  // Daily reminders
+  let match = timeExpr.match(/every day at (\d+)(am|pm)/i);
+  if (match) {
+    let hour = parseInt(match[1], 10);
+    const meridian = match[2].toLowerCase();
+    if (meridian === "pm" && hour !== 12) hour += 12;
+    if (meridian === "am" && hour === 12) hour = 0;
+    return `0 ${hour} * * *`; // every day
+  }
+
+  // Monthly reminders (e.g., "every 10th at 2pm")
+  match = timeExpr.match(/every (\d{1,2})(st|nd|rd|th)? at (\d+)(am|pm)/i);
+  if (match) {
+    const day = parseInt(match[1], 10);
+    let hour = parseInt(match[3], 10);
+    const meridian = match[4].toLowerCase();
+    if (meridian === "pm" && hour !== 12) hour += 12;
+    if (meridian === "am" && hour === 12) hour = 0;
+    return `0 ${hour} ${day} * *`; // monthly
+  }
+
+  // Explicit monthly phrasing (e.g., "every month on the 15th at 9am")
+  match = timeExpr.match(
+    /every month on the (\d{1,2})(st|nd|rd|th)? at (\d+)(am|pm)/i,
+  );
+  if (match) {
+    const day = parseInt(match[1], 10);
+    let hour = parseInt(match[3], 10);
+    const meridian = match[4].toLowerCase();
+    if (meridian === "pm" && hour !== 12) hour += 12;
+    if (meridian === "am" && hour === 12) hour = 0;
+    return `0 ${hour} ${day} * *`; // monthly
+  }
+
+  // Yearly reminders (e.g., "every September 15 at 9am")
+  match = timeExpr.match(/every (\w+) (\d{1,2}) at (\d+)(am|pm)/i);
   if (match) {
     const monthNames = {
       january: 1,
@@ -288,23 +326,10 @@ function parseRecurring(timeExpr) {
     const meridian = match[4].toLowerCase();
     if (meridian === "pm" && hour !== 12) hour += 12;
     if (meridian === "am" && hour === 12) hour = 0;
-
     return `0 ${hour} ${day} ${month} *`; // yearly
   }
 
-  // Example: "every 1st at 10am" (monthly)
-  match = timeExpr.match(/every (\d{1,2})(st|nd|rd|th) at (\d+)(am|pm)/i);
-  if (match) {
-    const day = parseInt(match[1], 10);
-    let hour = parseInt(match[3], 10);
-    const meridian = match[4].toLowerCase();
-    if (meridian === "pm" && hour !== 12) hour += 12;
-    if (meridian === "am" && hour === 12) hour = 0;
-
-    return `0 ${hour} ${day} * *`; // monthly
-  }
-
-  // Fallback: weekly parser (from earlier)
+  // Weekly reminders (fallback)
   match = timeExpr.match(/every (\w+) at (\d+)(am|pm)/i);
   if (match) {
     const days = {
@@ -321,7 +346,6 @@ function parseRecurring(timeExpr) {
     const meridian = match[3].toLowerCase();
     if (meridian === "pm" && hour !== 12) hour += 12;
     if (meridian === "am" && hour === 12) hour = 0;
-
     return `0 ${hour} * * ${day}`; // weekly
   }
 
@@ -417,7 +441,9 @@ app.command("/remindme", async ({ command, ack, respond, client }) => {
 app.command("/listreminders", async ({ command, ack, respond }) => {
   await ack();
 
-  const channelReminders = reminders[command.channel_id];
+  const channelId = command.channel_id;
+  const channelReminders = reminders[channelId];
+
   if (!channelReminders || Object.keys(channelReminders).length === 0) {
     return respond({
       text: "⚠️ No active reminders in this channel.",
@@ -426,11 +452,12 @@ app.command("/listreminders", async ({ command, ack, respond }) => {
   }
 
   let listText = "*📋 Active Reminders:*\n";
+
   for (const [task, info] of Object.entries(channelReminders)) {
-    listText += `• ${task} — ${info.type} (${info.schedule})\n`;
+    listText += `• *${task}* — ${info.type} (${info.schedule})\n`;
   }
 
-  return respond({
+  await respond({
     text: listText,
     response_type: "ephemeral",
   });
@@ -439,9 +466,6 @@ app.command("/listreminders", async ({ command, ack, respond }) => {
 app.command("/cancelme", async ({ command, ack, respond }) => {
   await ack();
 
-  const task = command.text.trim();
-
-  // If no task name provided, cancel the most recent reminder in this channel
   const channelReminders = reminders[command.channel_id];
   if (!channelReminders || Object.keys(channelReminders).length === 0) {
     return respond({
@@ -450,33 +474,41 @@ app.command("/cancelme", async ({ command, ack, respond }) => {
     });
   }
 
-  if (!task) {
+  const taskToCancel = command.text.trim();
+
+  if (taskToCancel) {
+    const reminder = channelReminders[taskToCancel];
+    if (!reminder) {
+      return respond({
+        text: `⚠️ No reminder found for task: *${taskToCancel}*.`,
+        response_type: "ephemeral",
+      });
+    }
+
+    if (reminder.type === "recurring") {
+      reminder.job.stop();
+    }
+    delete channelReminders[taskToCancel];
+
+    return respond({
+      text: `✅ Canceled reminder for task: *${taskToCancel}*.`,
+      response_type: "ephemeral",
+    });
+  } else {
     // Cancel the most recent reminder
     const lastTask = Object.keys(channelReminders).pop();
-    channelReminders[lastTask].job.stop();
+    const reminder = channelReminders[lastTask];
+
+    if (reminder.type === "recurring") {
+      reminder.job.stop();
+    }
     delete channelReminders[lastTask];
 
     return respond({
-      text: `🛑 Most recent reminder *${lastTask}* has been cancelled.`,
+      text: `✅ Canceled the most recent reminder for task: *${lastTask}*.`,
       response_type: "ephemeral",
     });
   }
-
-  // Cancel by task name
-  if (channelReminders[task]) {
-    channelReminders[task].job.stop();
-    delete channelReminders[task];
-
-    return respond({
-      text: `🛑 Reminder *${task}* has been cancelled.`,
-      response_type: "ephemeral",
-    });
-  }
-
-  return respond({
-    text: `⚠️ No active reminder found for *${task}*.`,
-    response_type: "ephemeral",
-  });
 });
 
 // Call the startApp function to start the app
